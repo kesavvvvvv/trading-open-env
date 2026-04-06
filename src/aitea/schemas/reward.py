@@ -1,25 +1,18 @@
-﻿"""
-Reward schema for AITEA.
-"""
+﻿"""Reward schema for AITEA."""
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from .common import _BaseSchema
 
 
-class Reward(BaseModel):
-    value: float
-
-    # Component breakdown of the reward signal
+class Reward(_BaseSchema):
+    total: float = Field(default=0.0)
+    normalized_score: float = Field(default=0.0, ge=0.0, le=1.0)
     components: Dict[str, float] = Field(default_factory=dict)
-
-    # Penalties applied on this step
     penalties: Dict[str, float] = Field(default_factory=dict)
-
-    # Optional normalized score in [0, 1]
-    normalized_score: Optional[float] = None
-
-    class Config:
-        extra = "forbid"
+    raw_total: float = Field(default=0.0)
+    clipped_total: float = Field(default=0.0)

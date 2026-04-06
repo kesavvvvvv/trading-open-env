@@ -1,112 +1,66 @@
-﻿"""
-Central configuration for AITEA.
-
-Keep all global defaults here so the codebase does not rely on hardcoded values
-spread across many files.
-"""
+﻿"""Central configuration for AITEA."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List
 import os
-import random
+from dataclasses import dataclass, field
+from typing import List
 
 
-@dataclass(slots=True)
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    return int(value) if value is not None and value != "" else default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    return float(value) if value is not None and value != "" else default
+
+
+@dataclass(frozen=True)
 class AITEAConfig:
-    # Episode settings
-    episode_horizon: int = 50
-    seed: int = 42
+    # Core episode settings
+    episode_length: int = _env_int("AITEA_EPISODE_LENGTH", 50)
+    seed: int = _env_int("AITEA_SEED", 42)
 
-    # Market universe
-    assets: List[str] = field(default_factory=lambda: [
-        "AAPL",
-        "MSFT",
-        "GOOG",
-        "EURUSD",
-    ])
+    # Capital and market universe
+    starting_cash: float = _env_float("AITEA_STARTING_CASH", 1_000_000.0)
+    assets: List[str] = field(
+        default_factory=lambda: ["AAPL", "MSFT", "GOOG", "TSLA", "AMZN"]
+    )
+    initial_prices: List[float] = field(
+        default_factory=lambda: [180.0, 420.0, 2800.0, 700.0, 190.0]
+    )
 
-    initial_prices: Dict[str, float] = field(default_factory=lambda: {
-        "AAPL": 180.0,
-        "MSFT": 350.0,
-        "GOOG": 140.0,
-        "EURUSD": 1.10,
-    })
+    # Trading and execution
+    transaction_cost_pct: float = _env_float("AITEA_TRANSACTION_COST_PCT", 0.001)
+    slippage_coefficient: float = _env_float("AITEA_SLIPPAGE_COEFFICIENT", 0.01)
+    max_order_size_pct: float = _env_float("AITEA_MAX_ORDER_SIZE_PCT", 0.25)
+    max_daily_turnover_pct: float = _env_float("AITEA_MAX_DAILY_TURNOVER_PCT", 1.0)
 
-    # Starting capital and portfolio constraints
-    initial_cash: float = 1_000_000.0
-    max_position_size: float = 100_000.0
-
-    # Market microstructure
-    volatility: float = 0.02
-    spread: float = 0.001
-    slippage_coeff: float = 0.0005
-
-    # Costs
-    transaction_cost_pct: float = 0.001
-
-    # Risk limits
-    max_drawdown: float = 0.20
-    daily_loss_limit: float = 0.05
-
-    # Feature switches
-    enable_news: bool = True
-    enable_regimes: bool = True
-    enable_multi_agent: bool = True
-
-    # Multi-agent pressure
-    noise_trader_strength: float = 0.10
+    # Risk settings
+    max_gross_exposure_pct: float = _env_float("AITEA_MAX_GROSS_EXPOSURE_PCT", 2.0)
+    max_drawdown_pct: float = _env_float("AITEA_MAX_DRAWDOWN_PCT", 0.15)
+    max_position_pct: float = _env_float("AITEA_MAX_POSITION_PCT", 0.35)
 
     # Reward weights
-    reward_weights: Dict[str, float] = field(default_factory=lambda: {
-        "pnl": 1.0,
-        "cost": 0.5,
-        "risk": 0.7,
-        "drawdown": 0.8,
-        "compliance": 1.0,
-        "stability": 0.3,
-    })
+    pnl_weight: float = _env_float("AITEA_PNL_WEIGHT", 1.0)
+    cost_weight: float = _env_float("AITEA_COST_WEIGHT", 0.5)
+    slippage_weight: float = _env_float("AITEA_SLIPPAGE_WEIGHT", 0.5)
+    risk_weight: float = _env_float("AITEA_RISK_WEIGHT", 1.0)
+    penalty_weight: float = _env_float("AITEA_PENALTY_WEIGHT", 1.0)
 
-    # Penalty weights
-    penalty_weights: Dict[str, float] = field(default_factory=lambda: {
-        "invalid_action": 1.0,
-        "overtrading": 0.5,
-        "constraint_violation": 2.0,
-        "missed_obligation": 3.0,
-    })
+    # Normalization / clipping
+    reward_clip_min: float = _env_float("AITEA_REWARD_CLIP_MIN", -1.0)
+    reward_clip_max: float = _env_float("AITEA_REWARD_CLIP_MAX", 1.0)
+
+    # Task defaults
+    default_task: str = os.getenv("AITEA_DEFAULT_TASK", "execution_easy")
 
 
-def load_config() -> AITEAConfig:
-    """
-    Load config with environment variable overrides.
-    """
-    cfg = AITEAConfig()
-
-    cfg.episode_horizon = int(os.getenv("EPISODE_HORIZON", str(cfg.episode_horizon)))
-    cfg.seed = int(os.getenv("AITEA_SEED", str(cfg.seed)))
-    cfg.initial_cash = float(os.getenv("INITIAL_CASH", str(cfg.initial_cash)))
-
-    assets_env = os.getenv("AITEA_ASSETS")
-    if assets_env:
-        cfg.assets = [a.strip() for a in assets_env.split(",") if a.strip()]
-
-    return cfg
-
-
-CONFIG = load_config()
+CONFIG = AITEAConfig()
 
 
 def get_config() -> AITEAConfig:
-    """
-    Return the active config object.
-    """
+    """Return the immutable global config instance."""
     return CONFIG
-
-
-def set_global_seed(seed: int) -> None:
-    """
-    Set Python's RNG seed for reproducibility.
-    """
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)

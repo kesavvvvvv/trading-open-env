@@ -1,105 +1,81 @@
-﻿"""
-Main public OpenEnv-compatible environment for AITEA.
-"""
+﻿"""Main AITEA environment implementation."""
 
 from __future__ import annotations
 
-from copy import deepcopy
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-from aitea.config import AITEAConfig, get_config
-from aitea.env.base_env import BaseEnv
-from aitea.env.reset_manager import ResetManager
-from aitea.env.state_manager import StateManager
-from aitea.env.step_manager import StepManager
-from aitea.schemas.action import Action
-from aitea.schemas.info import Info
-from aitea.schemas.observation import Observation
-from aitea.schemas.reward import Reward
+from ..config import AITEAConfig, get_config
+from ..schemas import Observation
+from .base_env import BaseEnv
+from .reset_manager import ResetManager
+from .state_manager import AITEAState, StateManager, Transition
+from .step_manager import StepManager
 
 
 class AITEAEnv(BaseEnv):
-    def __init__(self, task: Any | None = None, config: AITEAConfig | None = None, seed: int | None = None) -> None:
-        super().__init__()
-        self.config: AITEAConfig = config or get_config()
-        self.seed: int = self.config.seed if seed is None else seed
-        self.task: Any | None = task
+    """OpenEnv-compatible institutional trading simulation."""
 
-        self.reset_manager = ResetManager()
-        self.state_manager = StateManager()
-        self.step_manager = StepManager()
-
-        # Engines are optional here; they can be attached later or remain None.
-        self.market_engine: Any | None = None
-        self.treasury_engine: Any | None = None
-        self.execution_engine: Any | None = None
-        self.risk_engine: Any | None = None
-        self.news_engine: Any | None = None
-        self.regime_engine: Any | None = None
-        self.multi_agent_engine: Any | None = None
-        self.reward_model: Any | None = None
-
-        self.rng: Any = None
-        self.state_data: Dict[str, Any] = {}
-        self.current_observation: Observation | None = None
-        self.last_info: Info | None = None
-        self.last_action_error: str | None = None
-
-    def attach_engines(
+    def __init__(
         self,
-        *,
-        market_engine: Any | None = None,
-        treasury_engine: Any | None = None,
-        execution_engine: Any | None = None,
-        risk_engine: Any | None = None,
-        news_engine: Any | None = None,
-        regime_engine: Any | None = None,
-        multi_agent_engine: Any | None = None,
-        reward_model: Any | None = None,
-    ) -> "AITEAEnv":
-        self.market_engine = market_engine
-        self.treasury_engine = treasury_engine
-        self.execution_engine = execution_engine
-        self.risk_engine = risk_engine
-        self.news_engine = news_engine
-        self.regime_engine = regime_engine
-        self.multi_agent_engine = multi_agent_engine
-        self.reward_model = reward_model
-        return self
+        task_name: Optional[str] = None,
+        config: AITEAConfig | None = None,
+        episode_id: Optional[str] = None,
+        auto_reset: bool = True,
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.config = config or get_config()
+        self.task_name = task_name or self.config.default_task
+        self.reset_manager = ResetManager(self.config)
+        self.state_manager = StateManager(self.config)
+        self.step_manager = StepManager(self.config)
+        self.state_data: AITEAState | None = None
+        self.current_transition: Transition | None = None
 
-    def reset(self, seed: int | None = None) -> Observation:
-        self.ensure_open()
-        state = self.reset_manager.reset_episode(self, seed=seed if seed is not None else self.seed)
-        observation = self.state_manager.build_observation(self)
-        self.current_observation = observation
-        self.done = False
-        return observation
+        if auto_reset:
+            self.reset(task_name=self.task_name, episode_id=episode_id)
 
-    def step(self, action: Any) -> tuple[Observation, Reward, bool, Info]:
-        self.ensure_open()
-        self.ensure_not_done()
-        try:
-            return self.step_manager.step(self, action)
-        except Exception as exc:
-            self.last_action_error = str(exc)
-            raise
+    @classmethod
+    async def from_docker_image(cls, image_name: str | None = None, **kwargs: Any) -> "AITEAEnv":
+        """Compatibility helper for baseline runners that expect an async constructor."""
+        _ = image_name
+        return cls(**kwargs)
 
-    def state(self) -> Dict[str, Any]:
-        return self.state_manager.snapshot(self)
+    def reset(self, task_name: Optional[str] = None, episode_id: Optional[str] = None) -> Transition:
+        self._ensure_open()
+        chosen_task = task_name or self.task_name or self.config.default_task
+        self.task_name = chosen_task
+        self.state_data, transition = self.reset_manager.reset(chosen_task, episode_id=episode_id)
+        self.current_transition = transition
+        return transition
+
+    def step(self, action: Any) -> Transition:
+        self._ensure_open()
+        if self.state_data is None:
+            self.reset(task_name=self.task_name)
+        assert self.state_data is not None
+        transition = self.step_manager.step(self.state_data, action)
+        self.current_transition = transition
+        return transition
+
+    def state(self) -> Observation:
+        self._ensure_open()
+        if self.state_data is None:
+            self.reset(task_name=self.task_name)
+        assert self.state_data is not None
+        return self.state_manager.observation(self.state_data)
 
     def close(self) -> None:
-        if self.closed:
-            return
+        self._closed = True
 
-        self.on_close()
-        self.closed = True
+    async def areset(self, task_name: Optional[str] = None, episode_id: Optional[str] = None) -> Transition:
+        return self.reset(task_name=task_name, episode_id=episode_id)
 
-    def render(self) -> Dict[str, Any]:
-        """
-        Lightweight debug render.
-        """
-        return deepcopy(self.state_data)
+    async def astep(self, action: Any) -> Transition:
+        return self.step(action)
 
-    @property
-    def task_name(self) -> str:
-        return getattr(self.task, "name", "default")
+    async def astate(self) -> Observation:
+        return self.state()
+
+    async def aclose(self) -> None:
+        self.close()

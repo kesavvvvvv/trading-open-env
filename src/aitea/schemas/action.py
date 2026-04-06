@@ -1,48 +1,21 @@
-﻿"""
-Action schema for AITEA.
-"""
+﻿"""Action schema for AITEA."""
 
 from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import Field, confloat
 
-from aitea.schemas.common import (
-    OrderType,
-    OrderSide,
-    OrderUrgency,
-    TimeInForce,
-    HedgeInstruction,
-    AllocationAdjustment,
-)
+from .common import OrderInstruction, _BaseSchema
 
 
-class Order(BaseModel):
-    instrument: str
-    side: OrderSide
-    order_type: OrderType
-    quantity: float
-
-    price: Optional[float] = None
-    urgency: OrderUrgency = OrderUrgency.NORMAL
-    time_in_force: TimeInForce = TimeInForce.DAY
-    allow_partial_fill: bool = True
-
-    class Config:
-        extra = "forbid"
-
-
-class Action(BaseModel):
-    orders: List[Order] = Field(default_factory=list)
-
-    hedge_instructions: List[HedgeInstruction] = Field(default_factory=list)
-    allocation_adjustment: Optional[AllocationAdjustment] = None
-
-    # Optional high-level controls
-    pause_trading: bool = False
-    risk_off: bool = False
-    metadata: Dict[str, str] = Field(default_factory=dict)
-
-    class Config:
-        extra = "forbid"
+class Action(_BaseSchema):
+    orders: List[OrderInstruction] = Field(default_factory=list)
+    cancel_order_ids: List[str] = Field(default_factory=list)
+    rebalance_targets: Dict[str, confloat(ge=0.0, le=1.0)] = Field(default_factory=dict)
+    hedge_targets: Dict[str, float] = Field(default_factory=dict)
+    risk_reduction: float = Field(default=0.0, ge=0.0, le=1.0)
+    flatten_all: bool = Field(default=False)
+    hold_position: bool = Field(default=False)
+    comment: Optional[str] = Field(default=None, max_length=500)
+    strategy_tag: Optional[str] = Field(default=None, max_length=100)

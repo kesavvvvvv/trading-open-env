@@ -1,80 +1,64 @@
-﻿"""
-Task and environment registry for AITEA.
-
-This file keeps task registration centralized and gives the inference script
-and API a clean way to construct environments.
-"""
+﻿"""Task and environment registry."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Type
+from typing import Any, Callable, Dict, List, Type, TypeVar
+
+from .config import AITEAConfig, get_config
+
+TASK_REGISTRY: Dict[str, Type[Any]] = {}
+T = TypeVar("T")
 
 
-_TASK_REGISTRY: Dict[str, Type[Any]] = {}
-
-
-def register_task(name: str, task_cls: Type[Any]) -> None:
+def register_task(name: str, task_cls: Type[T] | None = None):
     """
-    Register a task class under a unique string name.
+    Register a task class under a string name.
+
+    Usage:
+        @register_task("execution_easy")
+        class ExecutionEasyTask(...):
+            ...
     """
-    if not name or not name.strip():
-        raise ValueError("Task name must be a non-empty string.")
+    def decorator(cls: Type[T]) -> Type[T]:
+        TASK_REGISTRY[name] = cls
+        return cls
 
-    if name in _TASK_REGISTRY:
-        raise ValueError(f"Task '{name}' is already registered.")
-
-    _TASK_REGISTRY[name] = task_cls
-
-
-def register_tasks() -> None:
-    """
-    Register all built-in tasks.
-
-    Importing here keeps circular imports low while the rest of the project
-    is still being built.
-    """
-    if _TASK_REGISTRY:
-        return
-
-    from aitea.tasks.task_execution_easy import TaskExecutionEasy
-    from aitea.tasks.task_liquidity_medium import TaskLiquidityMedium
-    from aitea.tasks.task_fx_hedge_medium import TaskFXHedgeMedium
-    from aitea.tasks.task_rebalance_hard import TaskRebalanceHard
-    from aitea.tasks.task_news_adapt_hard import TaskNewsAdaptHard
-    from aitea.tasks.task_regime_challenge_hard import TaskRegimeChallengeHard
-
-    register_task("execution_easy", TaskExecutionEasy)
-    register_task("liquidity_medium", TaskLiquidityMedium)
-    register_task("fx_hedge_medium", TaskFXHedgeMedium)
-    register_task("rebalance_hard", TaskRebalanceHard)
-    register_task("news_adapt_hard", TaskNewsAdaptHard)
-    register_task("regime_challenge_hard", TaskRegimeChallengeHard)
+    if task_cls is not None:
+        return decorator(task_cls)
+    return decorator
 
 
 def get_task(name: str) -> Type[Any]:
-    """
-    Fetch a registered task class by name.
-    """
-    if name not in _TASK_REGISTRY:
-        available = ", ".join(sorted(_TASK_REGISTRY.keys())) or "<none>"
-        raise ValueError(f"Task '{name}' not found. Available tasks: {available}")
-
-    return _TASK_REGISTRY[name]
+    """Return the registered task class for a task name."""
+    if name not in TASK_REGISTRY:
+        available = ", ".join(list_tasks()) or "none"
+        raise KeyError(f"Unknown task '{name}'. Available tasks: {available}")
+    return TASK_REGISTRY[name]
 
 
 def list_tasks() -> List[str]:
-    """
-    Return all registered task names.
-    """
-    return sorted(_TASK_REGISTRY.keys())
+    """Return all registered task names in sorted order."""
+    return sorted(TASK_REGISTRY.keys())
 
 
-def create_env(task_name: str, **kwargs: Any) -> Any:
+def create_env(task_name: str | None = None, config: AITEAConfig | None = None, **kwargs: Any):
     """
-    Create an AITEA environment for the given task.
-    """
-    from aitea.env.aitea_env import AITEAEnv
+    Create the main environment instance for a given task.
 
-    task_cls = get_task(task_name)
-    task_instance = task_cls(**kwargs)
-    return AITEAEnv(task=task_instance)
+    The environment class is imported lazily so this module stays lightweight
+    and does not create circular imports during startup.
+    """
+    from .env.aitea_env import AITEAEnv
+
+    cfg = config or get_config()
+    chosen_task = task_name or cfg.default_task
+    return AITEAEnv(task_name=chosen_task, config=cfg, **kwargs)
+
+
+__all__ = [
+    "TASK_REGISTRY",
+    "register_task",
+    "get_task",
+    "list_tasks",
+    "create_env",
+]
