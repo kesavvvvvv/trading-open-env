@@ -9,7 +9,7 @@ from openai import OpenAI
 # =========================
 
 # Environment (your local / HF Space)
-ENV_BASE_URL = os.environ["API_BASE_URL"]
+ENV_BASE_URL = os.getenv("ENV_URL")
 
 # LLM Proxy (MANDATORY for evaluator)
 API_BASE_URL = os.environ["API_BASE_URL"]
