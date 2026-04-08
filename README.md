@@ -1,4 +1,11 @@
-<<<<<<< HEAD
+---
+title: AITEA Trading Environment
+emoji: 🚀
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+---
 ﻿# AITEA — Agentic Institutional Trading & Execution Arena
 
 AITEA is a realistic institutional trading simulation environment for evaluating AI agents on portfolio construction, execution quality, liquidity-aware trading, risk management, and adaptation to market shocks. It is designed for the Meta × Scaler OpenEnv hackathon and follows the required OpenEnv-style lifecycle with typed models, `reset()`, `step()`, `state()`, `openenv.yaml`, a Dockerized runtime, and a baseline inference script.
@@ -981,7 +988,6 @@ This combination makes it strong because it is:
 ### Final Design Goal
 
 The design goal is simple- Create an environment that agents can actually learn from, and that judges can actually trust.
-=======
 ---
 title: Aitea
 emoji: 🏆
@@ -992,4 +998,3 @@ pinned: false
 ---
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
->>>>>>> 9ca6950869877ccc02995c86df70f5ba47fb1fba
