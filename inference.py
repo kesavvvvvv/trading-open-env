@@ -8,12 +8,19 @@ from openai import OpenAI
 # =========================
 # CONFIG
 # =========================
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:7860")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN = os.getenv("HF_TOKEN")
 
-if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN is required but not set")
+HF_TOKEN = os.getenv("HF_TOKEN")
+API_KEY = HF_TOKEN or os.getenv("API_KEY")
+
+if API_KEY is None:
+    raise ValueError("API_KEY or HF_TOKEN must be set")
+
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=API_KEY
+)
 
 TASK_NAME = os.getenv("TASK_NAME", "execution_easy")
 BENCHMARK = "aitea_trading_env"
@@ -22,10 +29,7 @@ MAX_STEPS = 50
 REQUEST_TIMEOUT = 10
 SUCCESS_THRESHOLD = 0.3
 
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=HF_TOKEN
-)
+
 
 # =========================
 # LOGGING (STRICT FORMAT)
