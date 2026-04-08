@@ -901,23 +901,7 @@ This ensures local testing and hosted deployment match as closely as possible.
 
 ---
 
-## 19. Validation Checklist
-
-Before submitting, verify:
-
-- openenv.yaml exists and is valid  
-- the core schemas import successfully  
-- the environment methods exist  
-- the reset/step/state lifecycle works  
-- all tasks register correctly  
-- all graders return scores in [0.0, 1.0]  
-- the reward stays bounded  
-- the tests pass  
-- the Docker image builds  
-- the container starts  
-- the health endpoint responds  
-- the baseline inference script runs  
-- the baseline logs match the required format  
+## 19. All the requirements for the submission are done and the inference script has been placed in the root folder  
 
 ---
 
