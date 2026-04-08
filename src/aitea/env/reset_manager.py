@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import math
 import random
-from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 from ..config import AITEAConfig, get_config
-from ..schemas import MarketRegime, NewsSignal, OrderType, PendingOrder
+from ..schemas import MarketRegime, NewsSignal
 from .state_manager import AITEAState, StateManager, Transition, build_observation, update_derived_state
 
 
@@ -103,6 +101,56 @@ def _profile_for(task_name: str, config: AITEAConfig) -> Dict[str, Any]:
     return profile
 
 
+def _initial_task_metrics(profile: Dict[str, Any], config: AITEAConfig) -> Dict[str, Any]:
+    kind = profile.get("kind", "generic")
+    metrics: Dict[str, Any] = {
+        "kind": kind,
+        "horizon": int(profile.get("horizon", config.episode_length)),
+        "liquidity_scale": float(profile.get("liquidity_scale", 0.75)),
+        "volatility": float(profile.get("volatility", 0.01)),
+        "news_probability": float(profile.get("news_probability", 0.03)),
+        "regime_flip_probability": float(profile.get("regime_flip_probability", 0.02)),
+    }
+
+    if kind in {"execution", "liquidity"}:
+        target_qty = float(profile.get("target_quantity", 0.0))
+        metrics.update(
+            {
+                "target_symbol": str(profile.get("target_symbol", "AAPL")),
+                "target_quantity": target_qty,
+                "target_remaining": target_qty,
+                "target_side": str(profile.get("target_side", "buy")),
+                "progress": 0.0,
+            }
+        )
+    elif kind == "hedge":
+        fx_exposure = float(profile.get("fx_exposure", 0.0))
+        metrics.update(
+            {
+                "fx_exposure": fx_exposure,
+                "hedge_error": abs(fx_exposure),
+                "hedge_symbol": str(profile.get("hedge_symbol", "MSFT")),
+            }
+        )
+    elif kind == "rebalance":
+        metrics.update(
+            {
+                "target_weights": dict(profile.get("target_weights", {})),
+                "tracking_error": 1.0,
+                "turnover": 0.0,
+            }
+        )
+    elif kind in {"news", "regime"}:
+        metrics.update(
+            {
+                "stress_score": 0.0,
+                "equity_peak": float(config.starting_cash),
+            }
+        )
+
+    return metrics
+
+
 class ResetManager:
     """Create fresh state for a new episode."""
 
@@ -163,55 +211,30 @@ class ResetManager:
             pending_orders=[],
             recent_actions=[],
             recent_rewards=[],
-            task_metrics={},
+            task_metrics=_initial_task_metrics(profile, self.config),
             done=False,
             last_error=None,
             rng=rng,
         )
 
-        # Task-specific initial metrics
-        kind = profile.get("kind", "generic")
-        if kind in {"execution", "liquidity"}:
-            target_qty = float(profile.get("target_quantity", 0.0))
-            state.task_metrics.update(
-                {
-                    "kind": kind,
-                    "target_quantity": target_qty,
-                    "target_remaining": target_qty,
-                    "target_symbol": str(profile.get("target_symbol", assets[0])),
-                    "progress": 0.0,
-                }
-            )
-        elif kind == "hedge":
-            fx_exposure = float(profile.get("fx_exposure", 0.0))
-            state.task_metrics.update(
-                {
-                    "kind": kind,
-                    "fx_exposure": fx_exposure,
-                    "hedge_error": abs(fx_exposure),
-                    "hedge_symbol": str(profile.get("hedge_symbol", assets[1 % len(assets)])),
-                }
-            )
-        elif kind == "rebalance":
-            state.task_metrics.update(
-                {
-                    "kind": kind,
-                    "target_weights": dict(profile.get("target_weights", {})),
-                    "tracking_error": 1.0,
-                }
-            )
-        elif kind in {"news", "regime"}:
-            state.task_metrics.update(
-                {
-                    "kind": kind,
-                    "stress_score": 0.0,
-                    "equity_peak": starting_cash,
-                }
-            )
-        else:
-            state.task_metrics["kind"] = kind
-
         update_derived_state(state)
+        state.task_metrics["initial_cash"] = starting_cash
+        state.task_metrics["initial_equity"] = state.equity
+        state.task_metrics["initial_gross_exposure"] = state.gross_exposure
+        state.task_metrics["position_count"] = 0.0
+        state.task_metrics["pending_order_count"] = 0.0
+
+        # Optional seeded news to make the observation more informative on reset.
+        if profile.get("kind") in {"news", "regime"}:
+            state.news_queue.append(
+                NewsSignal(
+                    headline=f"{task_name} opening market briefing",
+                    severity=0.25,
+                    sentiment=0.0,
+                    affected_symbols=assets[:2],
+                )
+            )
+
         obs = build_observation(state, self.config)
         info = self.state_manager.info(state, fill_ratio=1.0, violations=[])
         transition = Transition(observation=obs, reward=0.0, done=False, info=info, error=None)

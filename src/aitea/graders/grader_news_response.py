@@ -1,42 +1,37 @@
-﻿"""News response grader."""
+﻿"""News shock response grader."""
 
 from __future__ import annotations
 
-from .grader_base import GraderBase
-from ..env.state_manager import AITEAState
+from typing import Any
+
+from .grader_base import GraderBase, _clip01
 
 
 class NewsResponseGrader(GraderBase):
-    """Score response speed, drawdown protection, and recovery quality."""
+    name = "news_response"
 
-    def score(self, state: AITEAState) -> float:
-        kind = str(state.task_metrics.get("kind", "news"))
-        if kind != "news":
-            return 0.0
+    def score(self, source: Any = None) -> float:
+        m = self.metrics(source)
+        drawdown = max(0.0, m.get("drawdown_pct", m.get("drawdown", 0.0)))
+        pnl_delta = m.get("pnl_delta", 0.0)
+        recovery = _clip01(m.get("progress", 0.0))
+        reward_mean = m.get("reward_mean_recent", 0.0)
+        reward_std = abs(m.get("reward_std_recent", 0.0))
+        violation_count = max(0.0, m.get("violation_count", 0.0))
 
-        stress = self._safe_float(state.task_metrics.get("stress_score", 0.0), 0.0)
-        stress_score = self._clip01(1.0 - min(1.0, stress))
+        drawdown_term = _clip01(1.0 - min(1.0, drawdown * 7.0))
+        pnl_term = _clip01(0.5 + 0.5 * (pnl_delta / max(1.0, abs(pnl_delta) + 1000.0)))
+        stability_term = _clip01(1.0 - min(1.0, reward_std * 1.5))
+        compliance_term = _clip01(1.0 - min(1.0, violation_count / 6.0))
+        recovery_term = _clip01(0.4 * recovery + 0.6 * drawdown_term)
 
-        drawdown_score = self._drawdown_score(state.drawdown_pct, soft_limit=0.10)
-        pnl = self._safe_float(state.realized_pnl + state.unrealized_pnl, 0.0)
-        pnl_score = self._clip01((pnl / max(1.0, self.config.starting_cash * 0.02) + 1.0) / 2.0)
-
-        recovery_score = self._reward_stability(state)
-        consistency = self._clip01(1.0 - min(1.0, abs(self._safe_float(state.task_metrics.get("equity_peak", state.equity), state.equity) - state.equity) / max(1.0, self.config.starting_cash * 0.05)))
-
-        score = (
-            0.30 * stress_score
-            + 0.25 * drawdown_score
-            + 0.20 * pnl_score
-            + 0.15 * recovery_score
-            + 0.10 * consistency
+        base = (
+            0.30 * drawdown_term
+            + 0.20 * pnl_term
+            + 0.20 * recovery_term
+            + 0.15 * stability_term
+            + 0.15 * compliance_term
         )
-        return self._clip01(score)
-
-    def detail(self, state: AITEAState):
-        return {
-            "stress_score": self._clip01(1.0 - min(1.0, self._safe_float(state.task_metrics.get("stress_score", 0.0), 0.0))),
-            "drawdown_score": self._drawdown_score(state.drawdown_pct, soft_limit=0.10),
-            "pnl_score": self._clip01((self._safe_float(state.realized_pnl + state.unrealized_pnl, 0.0) / max(1.0, self.config.starting_cash * 0.02) + 1.0) / 2.0),
-            "recovery_score": self._reward_stability(state),
-        }
+        if reward_mean > 0.0:
+            base += 0.02
+        return _clip01(base)

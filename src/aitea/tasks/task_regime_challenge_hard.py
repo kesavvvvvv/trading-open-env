@@ -1,26 +1,22 @@
-﻿"""Hard hidden-regime challenge task for AITEA."""
+﻿"""Hard hidden-regime challenge task."""
 
 from __future__ import annotations
 
-from ..env.state_manager import AITEAState
-from ..registry import register_task
+from dataclasses import dataclass
+
 from .task_base import TaskBase
 
 
-@register_task("regime_challenge_hard")
-class RegimeChallengeHardTask(TaskBase):
-    def __init__(self) -> None:
-        super().__init__(
-            task_name="regime_challenge_hard",
-            difficulty="hard",
-            kind="regime",
-            description="Operate under hidden market regime shifts and adversarial volatility.",
-            grader_name="grader_regime_adaptation",
-            horizon=60,
-        )
+@dataclass(frozen=True)
+class TaskRegimeChallengeHard(TaskBase):
+    name: str = "regime_challenge_hard"
+    kind: str = "regime"
+    difficulty: str = "hard"
+    horizon: int = 60
+    description: str = "Operate under hidden market regime changes."
 
-    def profile(self):
-        profile = super().profile()
+    def task_profile(self):
+        profile = super().task_profile()
         profile.update(
             {
                 "liquidity_scale": 0.50,
@@ -31,12 +27,16 @@ class RegimeChallengeHardTask(TaskBase):
         )
         return profile
 
-    def initialize_metrics(self):
-        return {
-            "kind": self.kind,
-            "stress_score": 0.0,
-            "equity_peak": self.config.starting_cash,
-        }
+    def initial_metrics(self):
+        metrics = super().initial_metrics()
+        metrics.update(
+            {
+                "stress_score": 0.0,
+                "equity_peak": 0.0,
+            }
+        )
+        return metrics
 
-    def success(self, state: AITEAState) -> bool:
-        return state.drawdown_pct <= (self.config.max_drawdown_pct * 0.75) or state.step >= self.horizon
+
+def create_task() -> TaskRegimeChallengeHard:
+    return TaskRegimeChallengeHard()

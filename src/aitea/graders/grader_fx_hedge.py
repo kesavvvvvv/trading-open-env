@@ -1,43 +1,29 @@
-﻿"""FX hedge grader."""
+﻿"""FX hedge quality grader."""
 
 from __future__ import annotations
 
-from .grader_base import GraderBase
-from ..env.state_manager import AITEAState
+from typing import Any
+
+from .grader_base import GraderBase, _clip01
 
 
 class FXHedgeGrader(GraderBase):
-    """Score residual FX exposure reduction, cost control, and stability."""
+    name = "fx_hedge"
 
-    def score(self, state: AITEAState) -> float:
-        kind = str(state.task_metrics.get("kind", "hedge"))
-        if kind != "hedge":
-            return 0.0
+    def score(self, source: Any = None) -> float:
+        m = self.metrics(source)
+        fx_exposure = abs(m.get("fx_exposure", m.get("hedge_error", 0.0)))
+        hedge_error = abs(m.get("hedge_error", fx_exposure))
+        execution_cost = max(0.0, m.get("execution_cost", 0.0))
+        fill_ratio = _clip01(m.get("fill_ratio", 1.0))
+        drawdown = max(0.0, m.get("drawdown_pct", m.get("drawdown", 0.0)))
+        target = max(1.0, m.get("target_fx_exposure", m.get("initial_fx_exposure", 500000.0)))
 
-        initial_exposure = self._safe_float(state.task_profile.get("fx_exposure", 500_000.0), 500_000.0)
-        current_exposure = self._safe_float(state.task_metrics.get("fx_exposure", initial_exposure), initial_exposure)
-        exposure_score = 1.0 if initial_exposure <= 0 else self._clip01(1.0 - current_exposure / initial_exposure)
+        exposure_term = _clip01(1.0 - min(1.0, hedge_error / target))
+        cost_term = _clip01(1.0 - min(1.0, execution_cost / max(1.0, target * 0.01)))
+        risk_term = _clip01(1.0 - min(1.0, drawdown * 5.0))
 
-        hedge_error = self._safe_float(state.task_metrics.get("hedge_error", current_exposure), current_exposure)
-        hedge_error_score = 1.0 if initial_exposure <= 0 else self._clip01(1.0 - hedge_error / initial_exposure)
-
-        drawdown_score = self._drawdown_score(state.drawdown_pct, soft_limit=0.10)
-        stability = self._reward_stability(state)
-
-        score = (
-            0.45 * exposure_score
-            + 0.20 * hedge_error_score
-            + 0.20 * drawdown_score
-            + 0.15 * stability
-        )
-        return self._clip01(score)
-
-    def detail(self, state: AITEAState):
-        initial_exposure = self._safe_float(state.task_profile.get("fx_exposure", 500_000.0), 500_000.0)
-        current_exposure = self._safe_float(state.task_metrics.get("fx_exposure", initial_exposure), initial_exposure)
-        return {
-            "exposure_score": 1.0 if initial_exposure <= 0 else self._clip01(1.0 - current_exposure / initial_exposure),
-            "hedge_error_score": 1.0 if initial_exposure <= 0 else self._clip01(1.0 - self._safe_float(state.task_metrics.get("hedge_error", current_exposure), current_exposure) / initial_exposure),
-            "drawdown_score": self._drawdown_score(state.drawdown_pct, soft_limit=0.10),
-            "stability": self._reward_stability(state),
-        }
+        base = 0.45 * exposure_term + 0.20 * cost_term + 0.20 * fill_ratio + 0.15 * risk_term
+        if fx_exposure <= 1000.0:
+            base += 0.05
+        return _clip01(base)

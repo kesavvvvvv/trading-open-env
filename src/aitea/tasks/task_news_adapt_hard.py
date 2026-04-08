@@ -1,26 +1,22 @@
-﻿"""Hard news-adaptation task for AITEA."""
+﻿"""Hard news adaptation task."""
 
 from __future__ import annotations
 
-from ..env.state_manager import AITEAState
-from ..registry import register_task
+from dataclasses import dataclass
+
 from .task_base import TaskBase
 
 
-@register_task("news_adapt_hard")
-class NewsAdaptHardTask(TaskBase):
-    def __init__(self) -> None:
-        super().__init__(
-            task_name="news_adapt_hard",
-            difficulty="hard",
-            kind="news",
-            description="Adapt strategy during structured news shocks with drawdown control.",
-            grader_name="grader_news_response",
-            horizon=45,
-        )
+@dataclass(frozen=True)
+class TaskNewsAdaptHard(TaskBase):
+    name: str = "news_adapt_hard"
+    kind: str = "news"
+    difficulty: str = "hard"
+    horizon: int = 45
+    description: str = "Adapt strategy during structured news shocks."
 
-    def profile(self):
-        profile = super().profile()
+    def task_profile(self):
+        profile = super().task_profile()
         profile.update(
             {
                 "liquidity_scale": 0.55,
@@ -31,12 +27,16 @@ class NewsAdaptHardTask(TaskBase):
         )
         return profile
 
-    def initialize_metrics(self):
-        return {
-            "kind": self.kind,
-            "stress_score": 0.0,
-            "equity_peak": self.config.starting_cash,
-        }
+    def initial_metrics(self):
+        metrics = super().initial_metrics()
+        metrics.update(
+            {
+                "stress_score": 0.0,
+                "equity_peak": 0.0,
+            }
+        )
+        return metrics
 
-    def success(self, state: AITEAState) -> bool:
-        return state.drawdown_pct <= (self.config.max_drawdown_pct * 0.75) or state.step >= self.horizon
+
+def create_task() -> TaskNewsAdaptHard:
+    return TaskNewsAdaptHard()

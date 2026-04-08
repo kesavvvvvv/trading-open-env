@@ -1,46 +1,47 @@
-﻿"""Medium FX hedge task for AITEA."""
+﻿"""Medium FX hedge task."""
 
 from __future__ import annotations
 
-from ..env.state_manager import AITEAState
-from ..registry import register_task
+from dataclasses import dataclass
+
 from .task_base import TaskBase
 
 
-@register_task("fx_hedge_medium")
-class FXHedgeMediumTask(TaskBase):
-    def __init__(self) -> None:
-        super().__init__(
-            task_name="fx_hedge_medium",
-            difficulty="medium",
-            kind="hedge",
-            description="Reduce FX exposure efficiently with limited transaction cost.",
-            grader_name="grader_fx_hedge",
-            horizon=35,
-        )
+@dataclass(frozen=True)
+class TaskFXHedgeMedium(TaskBase):
+    name: str = "fx_hedge_medium"
+    kind: str = "hedge"
+    difficulty: str = "medium"
+    horizon: int = 35
+    description: str = "Reduce FX exposure efficiently while controlling cost."
+    fx_exposure: float = 500_000.0
+    hedge_symbol: str = "MSFT"
 
-    def profile(self):
-        profile = super().profile()
+    def task_profile(self):
+        profile = super().task_profile()
         profile.update(
             {
+                "fx_exposure": float(self.fx_exposure),
+                "hedge_symbol": self.hedge_symbol,
                 "liquidity_scale": 0.70,
                 "volatility": 0.009,
                 "news_probability": 0.03,
                 "regime_flip_probability": 0.02,
-                "fx_exposure": 500_000.0,
-                "hedge_symbol": "MSFT",
             }
         )
         return profile
 
-    def initialize_metrics(self):
-        return {
-            "kind": self.kind,
-            "fx_exposure": 500_000.0,
-            "hedge_error": 500_000.0,
-            "hedge_symbol": "MSFT",
-        }
+    def initial_metrics(self):
+        metrics = super().initial_metrics()
+        metrics.update(
+            {
+                "fx_exposure": float(self.fx_exposure),
+                "hedge_error": float(self.fx_exposure),
+                "hedge_symbol": self.hedge_symbol,
+            }
+        )
+        return metrics
 
-    def success(self, state: AITEAState) -> bool:
-        fx_exposure = float(state.task_metrics.get("fx_exposure", 10**9))
-        return fx_exposure <= 1_000.0 or state.step >= self.horizon
+
+def create_task() -> TaskFXHedgeMedium:
+    return TaskFXHedgeMedium()

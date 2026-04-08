@@ -1,0 +1,68 @@
+name: aitea
+version: "1.0.0"
+
+description: >
+  AITEA is an institutional-grade multi-asset trading simulation environment.
+  It enables AI agents to learn execution, portfolio management, and risk control
+  under realistic market conditions including slippage, liquidity constraints,
+  news shocks, and hidden regimes.
+
+entrypoint:
+  type: http
+  base_url: http://localhost:7860
+
+api:
+  reset: /reset
+  step: /step
+  state: /state
+  health: /health
+
+observation_space:
+  type: object
+  description: Structured market + portfolio + risk state
+  properties:
+    market:
+      type: object
+    portfolio:
+      type: object
+    risk:
+      type: object
+    metadata:
+      type: object
+
+action_space:
+  type: object
+  description: Structured trading action
+  properties:
+    orders:
+      type: array
+      items:
+        type: object
+    rebalance:
+      type: object
+    hedge:
+      type: object
+
+reward:
+  type: float
+  range: [0.0, 1.0]
+  description: Dense normalized reward combining pnl, execution quality, and risk control
+
+tasks:
+  - name: execution_easy
+    difficulty: easy
+    description: Execute a target order efficiently with minimal slippage
+  - name: liquidity_medium
+    difficulty: medium
+    description: Execute under low liquidity conditions with cost control
+  - name: rebalance_hard
+    difficulty: hard
+    description: Multi-asset portfolio rebalancing under constraints
+
+grader:
+  type: deterministic
+  range: [0.0, 1.0]
+
+constraints:
+  max_episode_steps: 100
+  deterministic_seed: true

@@ -1,48 +1,50 @@
-﻿"""Easy execution task for AITEA."""
+﻿"""Easy execution task."""
 
 from __future__ import annotations
 
-from ..env.state_manager import AITEAState
-from ..registry import register_task
+from dataclasses import dataclass
+
 from .task_base import TaskBase
 
 
-@register_task("execution_easy")
-class ExecutionEasyTask(TaskBase):
-    def __init__(self) -> None:
-        super().__init__(
-            task_name="execution_easy",
-            difficulty="easy",
-            kind="execution",
-            description="Execute a target order efficiently in a relatively stable market.",
-            grader_name="grader_execution",
-            horizon=25,
-        )
+@dataclass(frozen=True)
+class TaskExecutionEasy(TaskBase):
+    name: str = "execution_easy"
+    kind: str = "execution"
+    difficulty: str = "easy"
+    horizon: int = 25
+    description: str = "Execute a target order efficiently in a relatively stable market."
+    target_symbol: str = "AAPL"
+    target_quantity: int = 2000
+    target_side: str = "buy"
 
-    def profile(self):
-        profile = super().profile()
+    def task_profile(self):
+        profile = super().task_profile()
         profile.update(
             {
+                "target_symbol": self.target_symbol,
+                "target_quantity": float(self.target_quantity),
+                "target_side": self.target_side,
                 "liquidity_scale": 1.0,
                 "volatility": 0.008,
                 "news_probability": 0.02,
                 "regime_flip_probability": 0.01,
-                "target_symbol": "AAPL",
-                "target_quantity": 2000,
-                "target_side": "buy",
             }
         )
         return profile
 
-    def initialize_metrics(self):
-        return {
-            "kind": self.kind,
-            "target_symbol": "AAPL",
-            "target_quantity": 2000.0,
-            "target_remaining": 2000.0,
-            "progress": 0.0,
-        }
+    def initial_metrics(self):
+        metrics = super().initial_metrics()
+        metrics.update(
+            {
+                "target_symbol": self.target_symbol,
+                "target_quantity": float(self.target_quantity),
+                "target_remaining": float(self.target_quantity),
+                "progress": 0.0,
+            }
+        )
+        return metrics
 
-    def success(self, state: AITEAState) -> bool:
-        target_remaining = float(state.task_metrics.get("target_remaining", 10**9))
-        return target_remaining <= 1.0 or state.step >= self.horizon
+
+def create_task() -> TaskExecutionEasy:
+    return TaskExecutionEasy()

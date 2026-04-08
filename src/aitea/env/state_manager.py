@@ -7,7 +7,7 @@ import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -92,19 +92,31 @@ def _timestamp_for_step(step: int) -> str:
     return (base + timedelta(minutes=step)).isoformat()
 
 
-def _as_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
 def _safe_numeric_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
     out: Dict[str, float] = {}
     for key, value in metrics.items():
         if isinstance(value, (int, float)) and math.isfinite(float(value)):
             out[key] = float(value)
     return out
+
+
+def _safe_str(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    try:
+        return str(value)
+    except Exception:
+        return default
+
+
+def _risk_level_from_drawdown(drawdown: float) -> RiskLevel:
+    if drawdown < 0.05:
+        return RiskLevel.LOW
+    if drawdown < 0.10:
+        return RiskLevel.MODERATE
+    if drawdown < 0.15:
+        return RiskLevel.HIGH
+    return RiskLevel.CRITICAL
 
 
 def update_derived_state(state: AITEAState) -> None:
@@ -138,14 +150,26 @@ def update_derived_state(state: AITEAState) -> None:
         state.drawdown_pct = 0.0
 
 
-def _risk_level_from_drawdown(drawdown: float) -> RiskLevel:
-    if drawdown < 0.05:
-        return RiskLevel.LOW
-    if drawdown < 0.10:
-        return RiskLevel.MODERATE
-    if drawdown < 0.15:
-        return RiskLevel.HIGH
-    return RiskLevel.CRITICAL
+def _position_count(state: AITEAState) -> int:
+    return sum(1 for qty in state.positions.values() if abs(qty) > 1e-12)
+
+
+def _portfolio_weight_map(state: AITEAState) -> Dict[str, float]:
+    weights: Dict[str, float] = {}
+    if state.equity <= 0:
+        return weights
+    for symbol, qty in state.positions.items():
+        price = state.prices.get(symbol, 0.0)
+        weights[symbol] = (qty * price) / state.equity
+    return weights
+
+
+def _recent_reward_stats(rewards: List[float]) -> Tuple[float, float]:
+    if not rewards:
+        return 0.0, 0.0
+    mean = sum(rewards) / len(rewards)
+    var = sum((r - mean) ** 2 for r in rewards) / len(rewards)
+    return mean, math.sqrt(var)
 
 
 def build_observation(state: AITEAState, config: AITEAConfig | None = None) -> Observation:
@@ -199,16 +223,21 @@ def build_observation(state: AITEAState, config: AITEAConfig | None = None) -> O
         positions=positions,
     )
 
+    gross_exposure_pct = state.gross_exposure / state.equity if state.equity > 0 else 0.0
+    net_exposure_pct = abs(state.net_exposure) / state.equity if state.equity > 0 else 0.0
+
+    max_position_pct = float(state.task_profile.get("max_position_pct", getattr(cfg, "max_position_pct", 0.35)))
+
     risk = RiskSummary(
         risk_level=_risk_level_from_drawdown(state.drawdown_pct),
         drawdown_pct=state.drawdown_pct,
-        gross_exposure_pct=state.gross_exposure / state.equity if state.equity > 0 else 0.0,
-        net_exposure_pct=abs(state.net_exposure) / state.equity if state.equity > 0 else 0.0,
-        max_position_pct=float(state.task_profile.get("max_position_pct", 0.0)),
+        gross_exposure_pct=gross_exposure_pct,
+        net_exposure_pct=net_exposure_pct,
+        max_position_pct=max_position_pct,
         violation_count=int(state.task_metrics.get("violation_count", 0)),
     )
 
-    news_items = state.news_queue[-3:]
+    news_items = copy.deepcopy(state.news_queue[-3:])
     regime_confidence = max(0.0, min(1.0, float(state.regime_confidence)))
     regime = RegimeSignal(
         regime=state.regime,
@@ -230,6 +259,38 @@ def build_observation(state: AITEAState, config: AITEAConfig | None = None) -> O
         if returns:
             benchmark_return = sum(returns) / len(returns)
 
+    reward_mean, reward_std = _recent_reward_stats(rewards)
+    weight_map = _portfolio_weight_map(state)
+
+    task_metrics = _safe_numeric_metrics(state.task_metrics)
+    info_metrics = dict(task_metrics)
+
+    metadata = {
+        "task_kind": _safe_str(state.task_profile.get("kind", "generic")),
+        "episode_id": state.episode_id,
+        "task_name": state.task_name,
+        "cash": f"{state.cash:.2f}",
+        "starting_cash": f"{state.starting_cash:.2f}",
+        "equity": f"{state.equity:.2f}",
+        "cash_ratio": f"{state.cash / state.starting_cash:.4f}" if state.starting_cash > 0 else "0.0000",
+        "gross_exposure": f"{state.gross_exposure:.2f}",
+        "net_exposure": f"{state.net_exposure:.2f}",
+        "gross_exposure_pct": f"{gross_exposure_pct:.4f}",
+        "net_exposure_pct": f"{net_exposure_pct:.4f}",
+        "drawdown_pct": f"{state.drawdown_pct:.4f}",
+        "regime": _safe_str(state.regime.value),
+        "regime_confidence": f"{regime_confidence:.4f}",
+        "hidden_volatility": f"{state.hidden_volatility:.6f}",
+        "position_count": str(_position_count(state)),
+        "pending_order_count": str(len(state.pending_orders)),
+        "reward_mean_recent": f"{reward_mean:.4f}",
+        "reward_std_recent": f"{reward_std:.4f}",
+        "benchmark_return": f"{benchmark_return:.6f}",
+        "top_position": max(weight_map.items(), key=lambda kv: abs(kv[1]))[0] if weight_map else "none",
+        "task_horizon": str(int(state.task_profile.get("horizon", cfg.episode_length))),
+        "step_progress": f"{state.step / max(1, int(state.task_profile.get('horizon', cfg.episode_length))):.4f}",
+    }
+
     return Observation(
         step=state.step,
         timestamp=_timestamp_for_step(state.step),
@@ -244,13 +305,11 @@ def build_observation(state: AITEAState, config: AITEAConfig | None = None) -> O
         recent_actions=recent_actions,
         recent_rewards=rewards,
         history_summary=history_summary,
-        market_status="done" if state.done else "open",
+        market_status="closed" if state.done else "open",
         benchmark_return=benchmark_return,
-        metadata={
-            "task_kind": str(state.task_profile.get("kind", "generic")),
-            "episode_id": state.episode_id,
-            "task_name": state.task_name,
-        },
+        task_metrics=task_metrics,
+        info_metrics=info_metrics,
+        metadata=metadata,
     )
 
 
@@ -270,6 +329,14 @@ def build_info(
     numeric_metrics.setdefault("drawdown_pct", state.drawdown_pct)
     numeric_metrics.setdefault("gross_exposure", state.gross_exposure)
     numeric_metrics.setdefault("net_exposure", state.net_exposure)
+    numeric_metrics.setdefault("cash", state.cash)
+    numeric_metrics.setdefault("starting_cash", state.starting_cash)
+    numeric_metrics.setdefault("realized_pnl", state.realized_pnl)
+    numeric_metrics.setdefault("unrealized_pnl", state.unrealized_pnl)
+    numeric_metrics.setdefault("position_count", float(_position_count(state)))
+    numeric_metrics.setdefault("pending_order_count", float(len(state.pending_orders)))
+    numeric_metrics.setdefault("max_position_pct", float(state.task_profile.get("max_position_pct", 0.35)))
+    numeric_metrics.setdefault("max_gross_exposure_pct", float(state.task_profile.get("max_gross_exposure_pct", 0.0)))
 
     return Info(
         step=state.step,
@@ -287,6 +354,10 @@ def build_info(
         metadata={
             "episode_id": state.episode_id,
             "task_name": state.task_name,
+            "task_kind": _safe_str(state.task_profile.get("kind", "generic")),
+            "cash": f"{state.cash:.2f}",
+            "equity": f"{state.equity:.2f}",
+            "benchmark_return": f"{numeric_metrics.get('benchmark_return', 0.0):.6f}",
         },
     )
 

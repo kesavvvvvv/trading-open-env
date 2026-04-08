@@ -6,9 +6,9 @@ import math
 from typing import Any, Dict, List, Tuple
 
 from ..config import AITEAConfig, get_config
+from ..reward import RewardModel
 from ..schemas import (
     Action,
-    Info,
     MarketRegime,
     NewsSignal,
     OrderInstruction,
@@ -36,7 +36,17 @@ def _validate_action(action: Any) -> Action:
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v))
+    return max(lo, min(hi, float(v)))
+
+
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
 
 
 class StepManager:
@@ -45,12 +55,45 @@ class StepManager:
     def __init__(self, config: AITEAConfig | None = None) -> None:
         self.config = config or get_config()
         self.state_manager = StateManager(self.config)
+        self.reward_model = RewardModel(self.config)
 
     def _append_recent(self, state: AITEAState, action_text: str, reward_value: float) -> None:
         state.recent_actions.append(action_text)
         state.recent_rewards.append(float(reward_value))
         state.recent_actions = state.recent_actions[-10:]
         state.recent_rewards = state.recent_rewards[-10:]
+
+    def _ensure_state(self, state: AITEAState) -> None:
+        if not hasattr(state, "task_metrics") or state.task_metrics is None:
+            state.task_metrics = {}
+        if not hasattr(state, "realized_pnl_by_symbol") or state.realized_pnl_by_symbol is None:
+            state.realized_pnl_by_symbol = {}
+        if not hasattr(state, "avg_cost") or state.avg_cost is None:
+            state.avg_cost = {}
+        if not hasattr(state, "pending_orders") or state.pending_orders is None:
+            state.pending_orders = []
+        if not hasattr(state, "recent_actions") or state.recent_actions is None:
+            state.recent_actions = []
+        if not hasattr(state, "recent_rewards") or state.recent_rewards is None:
+            state.recent_rewards = []
+        if not hasattr(state, "news_queue") or state.news_queue is None:
+            state.news_queue = []
+        if not hasattr(state, "prices") or state.prices is None:
+            state.prices = {}
+        if not hasattr(state, "previous_prices") or state.previous_prices is None:
+            state.previous_prices = {}
+        if not hasattr(state, "positions") or state.positions is None:
+            state.positions = {}
+        if not hasattr(state, "cash"):
+            state.cash = 0.0
+        if not hasattr(state, "equity"):
+            state.equity = 0.0
+        if not hasattr(state, "starting_cash"):
+            state.starting_cash = max(1.0, float(state.equity or 1.0))
+        if not hasattr(state, "done"):
+            state.done = False
+        if not hasattr(state, "last_error"):
+            state.last_error = None
 
     def _generate_news(self, state: AITEAState) -> None:
         profile = state.task_profile
@@ -67,7 +110,7 @@ class StepManager:
                     affected_symbols=list(state.prices.keys())[:2],
                 )
             )
-            state.news_queue = state.news_queue[-3:]
+            state.news_queue = state.news_queue[-5:]
 
     def _maybe_switch_regime(self, state: AITEAState) -> None:
         profile = state.task_profile
@@ -75,7 +118,13 @@ class StepManager:
         if state.rng.random() >= p:
             return
 
-        choices = [MarketRegime.CALM, MarketRegime.NORMAL, MarketRegime.VOLATILE, MarketRegime.CRISIS, MarketRegime.RECOVERY]
+        choices = [
+            MarketRegime.CALM,
+            MarketRegime.NORMAL,
+            MarketRegime.VOLATILE,
+            MarketRegime.CRISIS,
+            MarketRegime.RECOVERY,
+        ]
         new_regime = choices[state.rng.randrange(len(choices))]
         state.regime = new_regime
         if new_regime == MarketRegime.CALM:
@@ -94,12 +143,51 @@ class StepManager:
             state.hidden_volatility = max(0.008, state.hidden_volatility * 1.15)
             state.regime_confidence = 0.60
 
+    def _advance_prices(self, state: AITEAState) -> None:
+        state.previous_prices = dict(state.prices)
+        latest_news = state.news_queue[-1] if state.news_queue else None
+
+        if state.regime == MarketRegime.CALM:
+            regime_mult = 0.65
+            drift_base = 0.00010
+        elif state.regime == MarketRegime.NORMAL:
+            regime_mult = 1.00
+            drift_base = 0.00015
+        elif state.regime == MarketRegime.VOLATILE:
+            regime_mult = 1.50
+            drift_base = 0.00005
+        elif state.regime == MarketRegime.CRISIS:
+            regime_mult = 2.10
+            drift_base = -0.00010
+        elif state.regime == MarketRegime.RECOVERY:
+            regime_mult = 0.90
+            drift_base = 0.00020
+        else:
+            regime_mult = 1.00
+            drift_base = 0.00010
+
+        for idx, symbol in enumerate(list(state.prices.keys())):
+            prev_price = float(state.prices[symbol])
+            seasonal = 0.00005 * math.sin((state.step + 1) / 4.0 + idx)
+
+            news_drift = 0.0
+            news_vol_mult = 1.0
+            if latest_news is not None and symbol in latest_news.affected_symbols:
+                news_drift = latest_news.sentiment * latest_news.severity * 0.010
+                news_vol_mult = 1.0 + latest_news.severity * 1.5
+
+            sigma = max(0.0005, state.hidden_volatility * regime_mult * news_vol_mult)
+            shock = state.rng.gauss(drift_base + seasonal + news_drift, sigma)
+            state.prices[symbol] = max(0.01, prev_price * (1.0 + shock))
+
     def _target_error(self, state: AITEAState) -> float:
         kind = state.task_profile.get("kind", "generic")
         equity = max(1.0, state.equity)
 
         if kind in {"execution", "liquidity"}:
-            target_symbol = str(state.task_profile.get("target_symbol", next(iter(state.prices))))
+            symbols = list(state.prices.keys())
+            default_symbol = symbols[0] if symbols else "AAPL"
+            target_symbol = str(state.task_profile.get("target_symbol", default_symbol))
             target_qty = float(state.task_profile.get("target_quantity", 0.0))
             held = float(state.positions.get(target_symbol, 0.0))
             return abs(target_qty - held) / max(1.0, target_qty)
@@ -188,16 +276,18 @@ class StepManager:
         order: OrderInstruction,
         liquidity_budget: Dict[str, int],
         violations: List[str],
-    ) -> Tuple[float, float, int, int]:
+    ) -> Tuple[float, float, int, int, float]:
         symbol = order.symbol
         if symbol not in state.prices:
+            violations.append("invalid_action")
             violations.append(f"unknown_symbol:{symbol}")
-            return 0.0, 0.0, 0, 0
+            return 0.0, 0.0, 0, 0, 0.0
 
         requested = int(order.quantity)
         if requested <= 0:
+            violations.append("invalid_action")
             violations.append("non_positive_quantity")
-            return 0.0, 0.0, 0, 0
+            return 0.0, 0.0, 0, 0, 0.0
 
         capacity = int(liquidity_budget.get(symbol, requested))
         filled = min(requested, max(0, capacity))
@@ -213,22 +303,25 @@ class StepManager:
                 status="pending",
             )
             state.pending_orders.append(pending)
-            return 0.0, 0.0, 0, requested
+            violations.append("liquidity_constraint")
+            return 0.0, 0.0, 0, requested, 0.0
 
         liquidity_budget[symbol] = max(0, capacity - filled)
-
         price = float(state.prices[symbol])
         side_mult = 1.0 if order.side == OrderSide.BUY else -1.0
+
         if order.side == OrderSide.SELL and state.positions.get(symbol, 0.0) <= 0:
+            violations.append("invalid_action")
             violations.append(f"no_position_to_sell:{symbol}")
-            return 0.0, 0.0, 0, requested
+            return 0.0, 0.0, 0, requested, 0.0
 
         available = int(round(state.positions.get(symbol, 0.0))) if order.side == OrderSide.SELL else filled
         if order.side == OrderSide.SELL:
             filled = min(filled, max(0, available))
             if filled <= 0:
+                violations.append("invalid_action")
                 violations.append(f"insufficient_position:{symbol}")
-                return 0.0, 0.0, 0, requested
+                return 0.0, 0.0, 0, requested, 0.0
             if filled < requested:
                 violations.append(f"partial_fill_position_cap:{symbol}")
 
@@ -237,6 +330,7 @@ class StepManager:
         notional = fill_price * filled
         execution_cost = notional * self.config.transaction_cost_pct
         slippage_cost = abs(fill_price - price) * filled
+        turnover_notional = notional
 
         if order.side == OrderSide.BUY:
             total_cost = notional + execution_cost
@@ -261,113 +355,197 @@ class StepManager:
                 violations.append(f"sell_clipped_to_position:{symbol}")
             filled = int(sold_qty)
 
-        return execution_cost, slippage_cost, filled, requested
+        return execution_cost, slippage_cost, filled, requested, turnover_notional
 
-    def _advance_prices(self, state: AITEAState) -> None:
-        profile = state.task_profile
-        kind = profile.get("kind", "generic")
-        base_vol = float(profile.get("volatility", state.hidden_volatility))
-        state.previous_prices = dict(state.prices)
+    def _build_reward(
+        self,
+        state: AITEAState,
+        prev_equity: float,
+        pnl_delta: float,
+        execution_cost_total: float,
+        slippage_cost_total: float,
+        filled_total: int,
+        requested_total: int,
+        turnover_notional: float,
+        target_error_before: float,
+        target_error_after: float,
+        violations: List[str],
+        action_obj: Action,
+    ) -> Reward:
+        violations = _dedupe_preserve_order(list(violations))
 
-        latest_news = state.news_queue[-1] if state.news_queue else None
-        news_drift = 0.0
-        news_vol = 1.0
-        if latest_news is not None:
-            news_drift = latest_news.sentiment * latest_news.severity * 0.012
-            news_vol = 1.0 + latest_news.severity * 1.5
-
-        for symbol, price in list(state.prices.items()):
-            drift = 0.0002
-            if kind == "execution":
-                drift = 0.00015
-            elif kind == "liquidity":
-                drift = 0.00010
-            elif kind == "rebalance":
-                drift = 0.00005
-            elif kind == "news":
-                drift = 0.00005
-            elif kind == "regime":
-                drift = 0.00003
-
-            regime_mult = 1.0
-            if state.regime == MarketRegime.CALM:
-                regime_mult = 0.60
-            elif state.regime == MarketRegime.NORMAL:
-                regime_mult = 1.00
-            elif state.regime == MarketRegime.VOLATILE:
-                regime_mult = 1.50
-            elif state.regime == MarketRegime.CRISIS:
-                regime_mult = 2.10
-            elif state.regime == MarketRegime.RECOVERY:
-                regime_mult = 0.90
-
-            noise = state.rng.gauss(0.0, base_vol * regime_mult * news_vol)
-            shock = news_drift if symbol in (latest_news.affected_symbols if latest_news else []) else 0.0
-            new_price = max(1.0, price * (1.0 + drift + noise + shock))
-            state.prices[symbol] = new_price
-
-    def _task_reward(self, state: AITEAState, prev_error: float, new_error: float, pnl_delta: float, execution_cost: float, slippage_cost: float) -> Dict[str, float]:
-        kind = state.task_profile.get("kind", "generic")
-        progress = prev_error - new_error
-        task_component = 0.0
-
-        if kind in {"execution", "liquidity"}:
-            task_component = 1.5 * progress
-        elif kind == "hedge":
-            task_component = 1.8 * progress
-        elif kind == "rebalance":
-            task_component = 2.0 * progress
-        elif kind == "news":
-            task_component = 1.2 * (pnl_delta / max(1.0, state.starting_cash)) - 0.8 * state.drawdown_pct
-        elif kind == "regime":
-            task_component = 1.0 * (pnl_delta / max(1.0, state.starting_cash)) - 0.7 * state.drawdown_pct
-        else:
-            task_component = progress
-
-        pnl_component = pnl_delta / max(1.0, state.starting_cash)
-        cost_component = -(execution_cost / max(1.0, state.starting_cash))
-        slippage_component = -(slippage_cost / max(1.0, state.starting_cash))
-        risk_component = -state.drawdown_pct
-
-        return {
-            "pnl": pnl_component,
-            "cost": cost_component,
-            "slippage": slippage_component,
-            "risk": risk_component,
-            "task": task_component,
-        }
-
-    def step(self, state: AITEAState, action: Any) -> Transition:
-        if state.done:
-            obs = build_observation(state, self.config)
-            info = self.state_manager.info(state, violations=["episode_already_done"])
-            reward_model = Reward(total=0.0, normalized_score=0.0, components={}, penalties={"episode_already_done": 1.0}, raw_total=0.0, clipped_total=0.0)
-            return Transition(observation=obs, reward=0.0, done=True, info=info, error="episode_already_done", reward_detail=reward_model)
-
-        action_obj = _validate_action(action)
-        state.last_error = None
-
-        prev_equity = float(state.equity)
-        prev_error = self._target_error(state)
-        execution_cost_total = 0.0
-        slippage_cost_total = 0.0
-        filled_total = 0
-        requested_total = 0
-        violations: List[str] = []
+        fill_ratio = (filled_total / requested_total) if requested_total > 0 else 1.0
+        completion_progress = max(0.0, target_error_before - target_error_after)
+        turnover = turnover_notional / max(1.0, prev_equity)
 
         if action_obj.hold_position and not action_obj.orders and not action_obj.rebalance_targets and not action_obj.hedge_targets and not action_obj.flatten_all:
-            action_text = "hold_position"
-            self._generate_news(state)
-            self._maybe_switch_regime(state)
-            self._advance_prices(state)
-            update_derived_state(state)
-            pnl_delta = state.equity - prev_equity
-            new_error = self._target_error(state)
-            components = self._task_reward(state, prev_error, new_error, pnl_delta, 0.0, 0.0)
-        else:
+            active_task = state.task_profile.get("kind", "generic")
+            if active_task in {"execution", "liquidity", "hedge", "rebalance"} and target_error_after > 0.01:
+                violations.append("no_op_abuse")
+
+        if state.gross_exposure > self.config.max_gross_exposure_pct * max(1.0, state.starting_cash):
+            violations.append("gross_exposure_breach")
+        if state.drawdown_pct > self.config.max_drawdown_pct:
+            violations.append("drawdown_breach")
+        if any(
+            abs(v) > self.config.max_position_pct * max(1.0, state.starting_cash)
+            for v in (state.positions.get(sym, 0.0) * state.prices.get(sym, 0.0) for sym in state.positions)
+        ):
+            violations.append("position_limit_breach")
+
+        violations = _dedupe_preserve_order(list(violations))
+
+        state.task_metrics["violation_count"] = float(len(violations))
+        state.task_metrics["execution_cost"] = float(execution_cost_total)
+        state.task_metrics["slippage_cost"] = float(slippage_cost_total)
+        state.task_metrics["fill_ratio"] = float(fill_ratio)
+        state.task_metrics["turnover"] = float(turnover)
+        state.task_metrics["pnl_delta"] = float(pnl_delta)
+        state.task_metrics["target_error"] = float(target_error_after)
+        state.task_metrics["progress"] = float(completion_progress)
+        state.task_metrics["market_drag"] = float(slippage_cost_total)
+        state.task_metrics["cash"] = float(state.cash)
+        state.task_metrics["equity"] = float(state.equity)
+        state.task_metrics["gross_exposure"] = float(state.gross_exposure)
+        state.task_metrics["net_exposure"] = float(state.net_exposure)
+        state.task_metrics["drawdown_pct"] = float(state.drawdown_pct)
+        state.task_metrics["equity_peak"] = float(state.peak_equity)
+
+        if state.task_profile.get("kind") in {"execution", "liquidity"}:
+            state.task_metrics["target_remaining"] = max(
+                0.0,
+                float(state.task_profile.get("target_quantity", 0.0)) * target_error_after,
+            )
+        elif state.task_profile.get("kind") == "hedge":
+            hedge_symbol = str(state.task_profile.get("hedge_symbol", "MSFT"))
+            state.task_metrics["hedge_error"] = max(0.0, float(state.task_metrics.get("fx_exposure", 0.0)))
+            state.task_metrics["hedge_symbol"] = hedge_symbol
+        elif state.task_profile.get("kind") == "rebalance":
+            state.task_metrics["tracking_error"] = float(target_error_after)
+
+        try:
+            reward = self.reward_model.compute(
+                state,
+                pnl_delta=pnl_delta,
+                execution_cost=execution_cost_total,
+                slippage=slippage_cost_total,
+                fill_ratio=fill_ratio,
+                turnover=turnover,
+                market_drag=slippage_cost_total,
+                target_error=target_error_after,
+                completion_progress=completion_progress,
+                violations=violations,
+            )
+        except Exception as exc:
+            fallback_total = (
+                (pnl_delta / max(1.0, prev_equity))
+                - (execution_cost_total / max(1.0, prev_equity))
+                - (slippage_cost_total / max(1.0, prev_equity))
+                - 0.25 * len(violations)
+            )
+            fallback_total = _clamp(fallback_total, self.config.reward_clip_min, self.config.reward_clip_max)
+            reward = Reward(
+                total=fallback_total,
+                normalized_score=_clamp((math.tanh(fallback_total) + 1.0) / 2.0, 0.0, 1.0),
+                components={
+                    "pnl": pnl_delta / max(1.0, prev_equity),
+                    "fill_ratio": fill_ratio,
+                    "completion_progress": completion_progress,
+                },
+                penalties={
+                    "fallback_error": 1.0,
+                    "violation_count": float(len(violations)),
+                },
+                raw_total=fallback_total,
+                clipped_total=fallback_total,
+            )
+            state.last_error = f"reward_fallback:{type(exc).__name__}"
+
+        reward.total = _clamp(reward.total, self.config.reward_clip_min, self.config.reward_clip_max)
+        reward.clipped_total = reward.total
+        reward.normalized_score = _clamp(reward.normalized_score, 0.0, 1.0)
+        return reward
+
+    def step(self, state: AITEAState, action: Any) -> Transition:
+        try:
+            self._ensure_state(state)
+            state.last_error = None
+
+            if state.done:
+                obs = build_observation(state, self.config)
+                info = self.state_manager.info(state, violations=["episode_already_done"])
+                reward_model = Reward(
+                    total=0.0,
+                    normalized_score=0.0,
+                    components={},
+                    penalties={"episode_already_done": 1.0},
+                    raw_total=0.0,
+                    clipped_total=0.0,
+                )
+                return Transition(
+                    observation=obs,
+                    reward=0.0,
+                    done=True,
+                    info=info,
+                    error="episode_already_done",
+                    reward_detail=reward_model,
+                )
+
+            try:
+                action_obj = _validate_action(action)
+            except Exception as exc:
+                obs = build_observation(state, self.config)
+                info = self.state_manager.info(state, violations=["invalid_action"])
+                reward_detail = Reward(
+                    total=0.0,
+                    normalized_score=0.0,
+                    components={},
+                    penalties={"invalid_action": 1.0},
+                    raw_total=0.0,
+                    clipped_total=0.0,
+                )
+                return Transition(
+                    observation=obs,
+                    reward=0.0,
+                    done=False,
+                    info=info,
+                    error=f"invalid_action:{type(exc).__name__}",
+                    reward_detail=reward_detail,
+                )
+
+            prev_equity = float(state.equity)
+            target_error_before = self._target_error(state)
+
+            execution_cost_total = 0.0
+            slippage_cost_total = 0.0
+            filled_total = 0
+            requested_total = 0
+            turnover_notional = 0.0
+            violations: List[str] = []
+
             orders = self._orders_from_action(state, action_obj)
 
-            # Cancel requested pending orders.
+            if (
+                (not action_obj.orders or len(action_obj.orders) == 0)
+                and not action_obj.flatten_all
+                and not action_obj.rebalance_targets
+                and not action_obj.hedge_targets
+            ):
+                violations.append("no_op_abuse")
+            # HARD PENALTY FOR NO-OP
+            if "no_op_abuse" in violations:
+                state.task_metrics["force_negative_reward"] = 1.0
+
+            valid_symbols = set(state.prices.keys())
+            filtered_orders: List[OrderInstruction] = []
+            for order in orders:
+                if order.symbol in valid_symbols:
+                    filtered_orders.append(order)
+                else:
+                    violations.append("invalid_symbol")
+                    violations.append(f"unknown_symbol:{order.symbol}")
+            orders = filtered_orders
+
             if action_obj.cancel_order_ids:
                 remaining: List[PendingOrder] = []
                 cancelled = set(action_obj.cancel_order_ids)
@@ -380,12 +558,11 @@ class StepManager:
                 state.pending_orders = remaining
 
             liquidity_scale = float(state.task_profile.get("liquidity_scale", 0.75))
-            liquidity_budget: Dict[str, int] = {}
-            for symbol in state.prices:
-                budget = int(max(1, round(1200.0 * liquidity_scale)))
-                liquidity_budget[symbol] = budget
+            liquidity_budget: Dict[str, int] = {
+                symbol: int(max(1, round(1200.0 * liquidity_scale)))
+                for symbol in state.prices
+            }
 
-            # Try to execute pending orders first.
             carry_over: List[PendingOrder] = []
             for pending in state.pending_orders:
                 order = OrderInstruction(
@@ -396,11 +573,12 @@ class StepManager:
                     urgency=0.5,
                     tag="pending",
                 )
-                ec, sc, filled, requested = self._apply_order(state, order, liquidity_budget, violations)
+                ec, sc, filled, requested, notional = self._apply_order(state, order, liquidity_budget, violations)
                 execution_cost_total += ec
                 slippage_cost_total += sc
                 filled_total += filled
                 requested_total += requested
+                turnover_notional += notional
                 remaining_qty = max(0, requested - filled)
                 if remaining_qty > 0:
                     carry_over.append(
@@ -418,11 +596,12 @@ class StepManager:
             state.pending_orders = carry_over
 
             for order in orders:
-                ec, sc, filled, requested = self._apply_order(state, order, liquidity_budget, violations)
+                ec, sc, filled, requested, notional = self._apply_order(state, order, liquidity_budget, violations)
                 execution_cost_total += ec
                 slippage_cost_total += sc
                 filled_total += filled
                 requested_total += requested
+                turnover_notional += notional
                 if filled < requested:
                     remaining_qty = requested - filled
                     state.pending_orders.append(
@@ -439,11 +618,13 @@ class StepManager:
                     )
 
             state.pending_orders = state.pending_orders[-10:]
+            state.recent_actions = state.recent_actions[-10:]
+            state.recent_rewards = state.recent_rewards[-10:]
+            state.news_queue = state.news_queue[-5:]
 
-            # Task-specific synthetic updates
             kind = state.task_profile.get("kind", "generic")
             if kind == "hedge":
-                hedge_symbol = str(state.task_profile.get("hedge_symbol", next(iter(state.prices))))
+                hedge_symbol = str(state.task_profile.get("hedge_symbol", next(iter(state.prices.keys()), "MSFT")))
                 trade_notional = 0.0
                 for order in orders:
                     if order.symbol == hedge_symbol:
@@ -457,102 +638,85 @@ class StepManager:
             self._maybe_switch_regime(state)
             self._advance_prices(state)
             update_derived_state(state)
-            pnl_delta = state.equity - prev_equity
-            new_error = self._target_error(state)
-            components = self._task_reward(state, prev_error, new_error, pnl_delta, execution_cost_total, slippage_cost_total)
 
-            # Update task metrics for observability.
-            state.task_metrics["target_error"] = new_error
-            state.task_metrics["progress"] = max(0.0, prev_error - new_error)
-            if state.task_profile.get("kind") in {"rebalance"}:
-                state.task_metrics["tracking_error"] = new_error
-            if state.task_profile.get("kind") in {"execution", "liquidity"}:
-                state.task_metrics["target_remaining"] = new_error * max(1.0, float(state.task_profile.get("target_quantity", 1.0)))
-            state.task_metrics["equity_peak"] = state.peak_equity
+            pnl_delta = state.equity - prev_equity
+            target_error_after = self._target_error(state)
+
+            reward_detail = self._build_reward(
+                state,
+                prev_equity=prev_equity,
+                pnl_delta=pnl_delta,
+                execution_cost_total=execution_cost_total,
+                slippage_cost_total=slippage_cost_total,
+                filled_total=filled_total,
+                requested_total=requested_total,
+                turnover_notional=turnover_notional,
+                target_error_before=target_error_before,
+                target_error_after=target_error_after,
+                violations=violations,
+                action_obj=action_obj,
+            )
+
+            state.step += 1
+            state.task_metrics["step"] = float(state.step)
+
+            horizon = int(state.task_profile.get("horizon", self.config.episode_length))
+            success = False
+            if kind in {"execution", "liquidity"}:
+                success = float(state.task_metrics.get("target_remaining", 1.0)) <= 1.0
+            elif kind == "hedge":
+                success = float(state.task_metrics.get("fx_exposure", 1.0)) <= 1_000.0
+            elif kind == "rebalance":
+                success = float(state.task_metrics.get("tracking_error", 1.0)) <= 0.08
+            elif kind in {"news", "regime"}:
+                success = state.drawdown_pct <= self.config.max_drawdown_pct * 0.75
+
+            state.done = bool(state.step >= horizon or success or "drawdown_breach" in violations)
+
+            violations = _dedupe_preserve_order(violations)
+            state.last_error = ";".join(violations) if violations else None
 
             action_text = f"orders={len(orders)} hold={action_obj.hold_position} flatten={action_obj.flatten_all}"
+            self._append_recent(state, action_text, float(reward_detail.total))
 
-        # Risk/violation penalties
-        if state.gross_exposure > self.config.max_gross_exposure_pct * max(1.0, state.starting_cash):
-            violations.append("gross_exposure_breach")
-        if state.drawdown_pct > self.config.max_drawdown_pct:
-            violations.append("drawdown_breach")
-        if any(abs(v) > self.config.max_position_pct * max(1.0, state.starting_cash) for v in (state.positions.get(sym, 0.0) * state.prices.get(sym, 0.0) for sym in state.positions)):
-            violations.append("position_limit_breach")
+            info = self.state_manager.info(
+                state,
+                execution_cost=execution_cost_total,
+                slippage=slippage_cost_total,
+                fill_ratio=(filled_total / requested_total) if requested_total > 0 else 1.0,
+                turnover=(turnover_notional / max(1.0, prev_equity)),
+                pnl_delta=pnl_delta,
+                violations=violations,
+            )
 
-        penalty_total = 0.0
-        penalty_weights = {
-            "gross_exposure_breach": 0.20,
-            "drawdown_breach": 0.25,
-            "position_limit_breach": 0.15,
-            "unknown_symbol": 0.05,
-            "non_positive_quantity": 0.03,
-            "no_position_to_sell": 0.05,
-            "sell_clipped_to_position": 0.02,
-            "partial_fill_position_cap": 0.02,
-            "cancel_id_not_found": 0.01,
-            "episode_already_done": 1.0,
-        }
-        for v in violations:
-            prefix = v.split(":", 1)[0]
-            penalty_total += penalty_weights.get(prefix, 0.01)
+            obs = build_observation(state, self.config)
+            return Transition(
+                observation=obs,
+                reward=float(reward_detail.total),
+                done=state.done,
+                info=info,
+                error=state.last_error,
+                reward_detail=reward_detail,
+            )
 
-        raw_total = (
-            self.config.pnl_weight * components["pnl"]
-            + self.config.cost_weight * components["cost"]
-            + self.config.slippage_weight * components["slippage"]
-            + self.config.risk_weight * components["risk"]
-            + components["task"]
-            - self.config.penalty_weight * penalty_total
-        )
-
-        clipped_total = _clamp(raw_total, self.config.reward_clip_min, self.config.reward_clip_max)
-        normalized = _clamp((math.tanh(raw_total) + 1.0) / 2.0, 0.0, 1.0)
-
-        info = self.state_manager.info(
-            state,
-            execution_cost=execution_cost_total,
-            slippage=slippage_cost_total,
-            fill_ratio=(filled_total / requested_total) if requested_total > 0 else 1.0,
-            turnover=(filled_total / max(1.0, state.starting_cash)),
-            pnl_delta=pnl_delta,
-            violations=violations,
-        )
-
-        reward_model = Reward(
-            total=clipped_total,
-            normalized_score=normalized,
-            components=components,
-            penalties={"total": penalty_total},
-            raw_total=raw_total,
-            clipped_total=clipped_total,
-        )
-
-        state.step += 1
-        state.last_error = violations[-1] if violations else None
-        self._append_recent(state, action_text, clipped_total)
-
-        horizon = int(state.task_profile.get("horizon", self.config.episode_length))
-        kind = state.task_profile.get("kind", "generic")
-
-        success = False
-        if kind in {"execution", "liquidity"}:
-            success = float(state.task_metrics.get("target_remaining", 1.0)) <= 1.0
-        elif kind == "hedge":
-            success = float(state.task_metrics.get("fx_exposure", 1.0)) <= 1_000.0
-        elif kind == "rebalance":
-            success = float(state.task_metrics.get("tracking_error", 1.0)) <= 0.08
-        elif kind in {"news", "regime"}:
-            success = state.drawdown_pct <= self.config.max_drawdown_pct * 0.75
-
-        state.done = bool(state.step >= horizon or success or "drawdown_breach" in violations)
-
-        obs = build_observation(state, self.config)
-        return Transition(
-            observation=obs,
-            reward=clipped_total,
-            done=state.done,
-            info=info,
-            error=state.last_error,
-            reward_detail=reward_model,
-        )
+        except Exception as exc:
+            self._ensure_state(state)
+            state.last_error = f"step_fallback:{type(exc).__name__}"
+            obs = build_observation(state, self.config)
+            info = self.state_manager.info(state, violations=[state.last_error])
+            reward_detail = Reward(
+                total=0.0,
+                normalized_score=0.0,
+                components={},
+                penalties={"step_error": 1.0},
+                raw_total=0.0,
+                clipped_total=0.0,
+            )
+            return Transition(
+                observation=obs,
+                reward=0.0,
+                done=False,
+                info=info,
+                error=state.last_error,
+                reward_detail=reward_detail,
+            )
