@@ -285,7 +285,7 @@ def run():
     warmup_llm()   
     rewards: List[float] = []
     steps = 0
-    score = 0.0
+    score = 0
     success = False
 
     log_start(TASK_NAME, BENCHMARK, MODEL_NAME)
@@ -327,7 +327,7 @@ def run():
         success = score >= SUCCESS_THRESHOLD
 
     except Exception as e:
-        log_step(0, "{}", 0.0, True, str(e))
+        log_step(0, "{}", 0, True, str(e))
 
     finally:
         log_end(success, steps, score, rewards)
