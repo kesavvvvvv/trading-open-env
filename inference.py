@@ -289,8 +289,8 @@ def run():
     success = False
     TASK_MAPPING = {
                 "execution_easy": "task_execution_easy",
-                "execution_medium": "task_execution_medium",
-                "execution_hard": "task_execution_hard",
+                "liquidity_medium": "task_liquidity_medium",
+                "rebalance_hard": "task_rebalance_hard",
             }
     log_start(TASK_NAME, BENCHMARK, MODEL_NAME)
 

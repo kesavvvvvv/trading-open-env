@@ -85,11 +85,11 @@ class StepManager:
         if not hasattr(state, "positions") or state.positions is None:
             state.positions = {}
         if not hasattr(state, "cash"):
-            state.cash = 0.0
+            state.cash = 0
         if not hasattr(state, "equity"):
-            state.equity = 0.0
+            state.equity = 0
         if not hasattr(state, "starting_cash"):
-            state.starting_cash = max(1.0, float(state.equity or 1.0))
+            state.starting_cash = max(1, float(state.equity or 1))
         if not hasattr(state, "done"):
             state.done = False
         if not hasattr(state, "last_error"):
@@ -413,8 +413,8 @@ class StepManager:
 
         if state.task_profile.get("kind") in {"execution", "liquidity"}:
             state.task_metrics["target_remaining"] = max(
-                0.0,
-                float(state.task_profile.get("target_quantity", 0.0)) * target_error_after,
+                0,
+                float(state.task_profile.get("target_quantity", 0)) * target_error_after,
             )
         elif state.task_profile.get("kind") == "hedge":
             hedge_symbol = str(state.task_profile.get("hedge_symbol", "MSFT"))
@@ -464,6 +464,11 @@ class StepManager:
         reward.total = _clamp(reward.total, self.config.reward_clip_min, self.config.reward_clip_max)
         reward.clipped_total = reward.total
         reward.normalized_score = _clamp(reward.normalized_score, 0.0, 1.0)
+        reward = float(reward)
+        if reward <= 0.0:
+            reward = 0.01
+        elif reward >= 1.0:
+            reward = 0.99
         return reward
 
     def step(self, state: AITEAState, action: Any) -> Transition:
