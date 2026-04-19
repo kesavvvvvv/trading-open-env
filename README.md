@@ -75,7 +75,7 @@ The code is modular:
 
 ---
 
-## 5. Repository layout
+## Repository layout
 
 ```text
 aitea/
