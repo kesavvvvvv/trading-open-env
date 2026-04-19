@@ -24,7 +24,13 @@ from .state_manager import (
     build_observation,
     update_derived_state,
 )
-
+def _fix_reward(r):
+    r = float(r)
+    if r <= 0.0:
+        return 0.01
+    elif r >= 1.0:
+        return 0.99
+    return r
 
 def _validate_action(action: Any) -> Action:
     if isinstance(action, Action):
@@ -374,7 +380,7 @@ class StepManager:
     ) -> Reward:
         violations = _dedupe_preserve_order(list(violations))
 
-        fill_ratio = (filled_total / requested_total) if requested_total > 0 else 1.0
+        fill_ratio = (filled_total / requested_total) if requested_total > 0 else 1
         completion_progress = max(0.0, target_error_before - target_error_after)
         turnover = turnover_notional / max(1.0, prev_equity)
 
@@ -719,7 +725,7 @@ class StepManager:
             )
             return Transition(
                 observation=obs,
-                reward=0.0,
+                reward=0,
                 done=False,
                 info=info,
                 error=state.last_error,

@@ -14,7 +14,7 @@ The environment is intentionally **single-agent at the API level** while simulat
 
 ---
 
-## 1. Why this environment exists
+## Why this environment exists
 
 Most reinforcement learning and agent benchmarks are either too toy-like or too disconnected from real operational decision-making. AITEA is built to model tasks that real institutional desks actually care about:
 
@@ -36,45 +36,13 @@ The goal is not to simulate a perfect exchange. The goal is to simulate a **good
 
 ---
 
-## 2. Hackathon alignment
 
-This project is designed to satisfy the hackathon requirements:
 
-- real-world task simulation
-- OpenEnv-compliant typed models
-- `step()`, `reset()`, `state()` API
-- `openenv.yaml`
-- 3+ tasks with difficulty progression
-- deterministic graders
-- meaningful dense reward
-- reproducible baseline script
-- Dockerfile
-- Hugging Face Space compatibility
-- detailed README and deployment docs
-
-The environment focuses on trading because it naturally supports:
-- measurable outcomes
-- partial progress
-- cost and risk tradeoffs
-- task difficulty progression
-- programmatic grading
-
----
-
-## 3. Project name
-
-**AITEA — Agentic Institutional Trading & Execution Arena**
-
-### One-line summary
-A high-fidelity trading simulation where AI agents learn execution, portfolio optimization, and risk control under realistic market microstructure, liquidity constraints, and hidden regime shifts.
-
----
-
-## 4. Core design philosophy
+## Core design philosophy
 
 AITEA follows five principles.
 
-### 4.1 Realism
+### Realism
 The environment includes:
 - price movement
 - spread changes
@@ -86,16 +54,16 @@ The environment includes:
 - news shocks
 - background market participants
 
-### 4.2 Determinism
+### Determinism
 Given the same seed and task configuration, the environment should behave reproducibly. That is important for grading, debugging, and comparing agents fairly.
 
-### 4.3 Dense learning signal
+### Dense learning signal
 The reward is not just a final success/failure flag. It gives partial progress at every step.
 
-### 4.4 Interpretability
+### Interpretability
 Rewards, penalties, and grader outputs are broken into components so that users can understand why the agent performed well or poorly.
 
-### 4.5 Extensibility
+### Extensibility
 The code is modular:
 - schemas define typed data
 - engines simulate the market
@@ -139,9 +107,9 @@ aitea/
 ├── tests/
 ├── scripts/
 ├── docs/
-└── assets/
+
 ```
-## 6. Environment Overview
+## Environment Overview
 
 AITEA simulates a market where an agent receives structured observations and must choose actions that improve performance under real trading frictions.
 
@@ -198,7 +166,7 @@ This loop ensures a realistic **closed decision-feedback cycle**, critical for t
 
 ---
 
-## 7. Observation Space
+## Observation Space
 
 The observation is a typed structured object, not a plain blob. It is designed so that an LLM or policy model can reason over the market state safely and consistently.
 
@@ -273,9 +241,9 @@ This design gives the agent enough structure to make meaningful choices without 
 
 ---
 
-## 8. Action Space
+## Action Space
 
-The action is also typed and validated. It is designed to support realistic trading decisions while remaining strict enough for automated validation.
+The action is also typed and validated. It is designed to support realistic trading decisions.
 
 ### Action contents
 
@@ -316,7 +284,7 @@ The action space is not meant to be a free-form natural language interface. It i
 
 ---
 
-## 9. Reward Design
+## Reward Design
 
 The reward system is one of the most important parts of this project.
 
@@ -364,27 +332,13 @@ The reward:
 
 ---
 
-### Why this is strong for judging
-
-The judges are looking for more than a binary terminal score. They want:
-
-- meaningful partial progress  
-- smooth difficulty progression  
-- non-trivial tradeoffs  
-- sensible penalty design  
-- a reward that supports real learning  
-
-This design is intended to show exactly that.
-
----
-
-## 10. Tasks
+## Tasks
 
 AITEA includes six tasks. Each task represents a real institutional trading objective and is paired with a deterministic grader.
 
 ---
 
-### 10.1 execution_easy
+### execution_easy
 
 **Objective:** execute a target order efficiently in a relatively stable market.
 
@@ -400,7 +354,7 @@ AITEA includes six tasks. Each task represents a real institutional trading obje
 
 ---
 
-### 10.2 liquidity_medium
+### liquidity_medium
 
 **Objective:** execute or rebalance under low-liquidity conditions.
 
@@ -416,7 +370,7 @@ AITEA includes six tasks. Each task represents a real institutional trading obje
 
 ---
 
-### 10.3 fx_hedge_medium
+### fx_hedge_medium
 
 **Objective:** reduce FX exposure efficiently.
 
@@ -432,7 +386,7 @@ AITEA includes six tasks. Each task represents a real institutional trading obje
 
 ---
 
-### 10.4 rebalance_hard
+### rebalance_hard
 
 **Objective:** rebalance a multi-asset portfolio under strict constraints.
 
@@ -449,7 +403,7 @@ AITEA includes six tasks. Each task represents a real institutional trading obje
 
 ---
 
-### 10.5 news_adapt_hard
+### news_adapt_hard
 
 **Objective:** adapt strategy during structured news shocks.
 
@@ -466,7 +420,7 @@ AITEA includes six tasks. Each task represents a real institutional trading obje
 
 ---
 
-### 10.6 regime_challenge_hard
+### regime_challenge_hard
 
 **Objective:** operate under hidden market regime changes.
 
@@ -483,7 +437,7 @@ AITEA includes six tasks. Each task represents a real institutional trading obje
 
 ---
 
-## 11. Graders
+## Graders
 
 Each task has a deterministic grader.
 
@@ -531,7 +485,7 @@ Graders measure things like:
 
 ---
 
-## 12. Multi-Agent Realism
+## Multi-Agent Realism
 
 Although AITEA exposes a single-agent interface, the environment internally simulates a multi-agent market.
 
@@ -564,7 +518,7 @@ Agents must learn to:
 
 ---
 
-## 13. API Contract
+## API Contract
 
 AITEA follows a strict environment contract.
 
@@ -599,53 +553,13 @@ These routes exist so the validator and deployment environment can interact with
 
 ---
 
-## 14. Baseline Inference
-
-The root `inference.py` script is required for the hackathon.
-
-### What it does
-
-It:
-
-- reads API_BASE_URL  
-- reads MODEL_NAME  
-- reads HF_TOKEN  
-- uses the OpenAI client  
-- runs the model against the environment  
-- prints structured logs in the required format  
-
----
-
-### Why it matters
-
-The baseline is used to:
-
-- show the environment is runnable  
-- produce a reproducible score  
-- verify integration  
-- validate the output format  
-
----
-
-### Required logging format
-
-The script must produce logs that follow the required structure with:
-
-- [START]  
-- [STEP]  
-- [END]  
-
-This format is important because the validator checks it.
-
----
-
-## 15. Local Setup
+## Local Setup
 
 This section explains how to set up, validate, and run the AITEA environment locally. It mirrors the exact conditions used during hackathon evaluation and ensures your submission passes all validation stages.
 
 ---
 
-### 2. Run Test Suite
+### Run Test Suite
 
 Run the full test suite to verify that the environment is correctly set up:
 
@@ -661,7 +575,7 @@ This validates:
 
 ---
 
-### 3. Build Docker Image
+### Build Docker Image
 
 Build the Docker image locally:
 
@@ -675,7 +589,7 @@ This ensures:
 
 ---
 
-### 4. Run Docker Container
+### Run Docker Container
 
 Start the container and expose the API:
 
@@ -687,7 +601,7 @@ After startup, the API should be accessible at:
 
 ---
 
-### 5. Verify API Endpoints
+### Verify API Endpoints
 
 Test the core endpoints manually or using tools like curl or Postman.
 
@@ -715,7 +629,7 @@ These endpoints are mandatory for:
 
 ---
 
-### 6. Run Sample Episode (Debugging)
+### Run Sample Episode (Debugging)
 
 Run a manual episode for debugging and inspection:
 
@@ -735,47 +649,7 @@ Useful for:
 
 ---
 
-### 7. Run Baseline Inference
-
-Run the official baseline script:
-
-    bash scripts/run_baseline.sh
-
-Alternatively:
-
-    python inference.py
-
-Before running, ensure the following environment variables are set:
-
-- API_BASE_URL  
-- MODEL_NAME  
-- HF_TOKEN  
-
-These are required for model inference via the OpenAI-compatible client.
-
----
-
-### 8. Expected Output Format
-
-The inference script must print logs in the exact required format:
-
-    [START]
-    [STEP]
-    [STEP]
-    ...
-    [END]
-
-Important requirements:
-
-- tag names must be exact  
-- ordering must not change  
-- formatting must be strictly consistent  
-
-This format is strictly validated during hackathon evaluation.
-
----
-
-### 9. Full Local Validation (Recommended)
+### Full Local Validation (Recommended)
 
 Run the complete validation pipeline:
 
@@ -843,7 +717,7 @@ Once all steps pass successfully, the environment is fully ready for:
 
 ---
 
-## 16. Environment Variables
+## Environment Variables
 
 The baseline and deployment flow expect:
 
@@ -866,7 +740,7 @@ These allow you to control the environment without editing code.
 
 ---
 
-## 17. Docker Deployment
+## Docker Deployment
 
 The Dockerfile is meant to:
 
@@ -887,7 +761,7 @@ The Dockerfile is meant to:
 
 ---
 
-## 18. Hugging Face Spaces Deployment
+## Hugging Face Spaces Deployment
 
 The repository is intended to run as a Hugging Face Space.
 
@@ -909,37 +783,7 @@ This ensures local testing and hosted deployment match as closely as possible.
 
 ---
 
-## 19. All the requirements for the submission are done and the inference script has been placed in the root folder  
-
----
-
-## 20. Important Design Notes
-
-### This is not a game
-
-AITEA is a real-world simulation of institutional trading behavior. It should be treated like a decision environment, not like a toy game.
-
----
-
-### This is not a general-purpose market simulator
-
-The environment is deliberately scoped around evaluation tasks that are meaningful for AI agents.
-
----
-
-### This is not a free-form action generator
-
-Actions must remain structured and validated so that the environment remains stable and judgeable.
-
----
-
-### This is not a stochastic black box
-
-The environment should be reproducible and inspectable.
-
----
-
-## 21. Limitations
+## Limitations
 
 AITEA is realistic, but it is still a controlled simulation. It does not attempt to replicate every detail of real markets. It focuses on the parts that matter for agent learning:
 
@@ -954,7 +798,7 @@ That tradeoff is intentional. The environment is designed for evaluation quality
 
 ---
 
-## 22. Summary
+## Summary
 
 AITEA is a realistic institutional trading benchmark for agents. It provides:
 
@@ -972,29 +816,3 @@ AITEA is a realistic institutional trading benchmark for agents. It provides:
 
 ---
 
-### Why this is strong for the hackathon
-
-This combination makes it strong because it is:
-
-- practically useful  
-- technically clean  
-- sufficiently novel  
-- deterministic  
-- easy to evaluate  
-- hard to game  
-
----
-
-### Final Design Goal
-
-The design goal is simple- Create an environment that agents can actually learn from, and that judges can actually trust.
----
-title: Aitea
-emoji: 🏆
-colorFrom: pink
-colorTo: yellow
-sdk: docker
-pinned: false
----
-
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
